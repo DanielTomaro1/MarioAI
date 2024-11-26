@@ -207,16 +207,21 @@ def train():
     
     print(f"Using device: {mario.device}")
     
-    # Track previous state information for reward calculation
+    # Track previous state information
     prev_coins = 0
     prev_score = 0
     prev_x_pos = 0
     prev_y_pos = 0
-    highest_y_pos = 0
-    blocks_explored = set()
-    last_jump_height = 0
-    backward_movement_start = 0
-    running_jump_attempted = False
+    prev_status = 'small'
+    prev_kills = 0
+    blocks_hit = set()
+    blocks_passed = set()
+    stuck_x_pos = 0
+    stuck_counter = 0
+    running_jump_state = 0
+    running_jump_start_pos = 0
+    last_enemy_kill_pos = 0
+    kill_streak = 0
     
     episodes = 1000
     try:
@@ -229,136 +234,159 @@ def train():
             prev_score = 0
             prev_x_pos = 0
             prev_y_pos = 0
-            highest_y_pos = 0
-            blocks_explored.clear()
+            prev_status = 'small'
+            prev_kills = 0
+            blocks_hit.clear()
+            blocks_passed.clear()
             stuck_counter = 0
-            last_jump_time = 0
-            stuck_x_position = None
-            attempted_jump_positions = set()
+            running_jump_state = 0
+            kill_streak = 0
+            last_enemy_kill_pos = 0
             
             done = False
             total_reward = 0
             steps = 0
             current_loss = None
             
-            # Track previous actions for running jump detection
-            last_actions = []
-            
             while not done and steps < 1000:
                 steps += 1
                 
-                # Always render
                 env.render()
                 
-                # Get action
-                action = mario.act(state)
+                # Get current position and check for blocks
+                x_pos = info.get('x_pos', 0) if 'info' in locals() else prev_x_pos
+                y_pos = info.get('y_pos', 0) if 'info' in locals() else prev_y_pos
                 
-                # Keep track of last few actions
-                last_actions.append(action)
-                if len(last_actions) > 5:
-                    last_actions.pop(0)
+                # Check for blocks above
+                blocks_above = False
+                for y_offset in range(16, 64, 16):
+                    check_pos = (int(x_pos/16), int((y_pos+y_offset)/16))
+                    if check_pos not in blocks_hit and check_pos not in blocks_passed:
+                        blocks_above = True
+                        break
                 
-                # Perform action
+                # Determine action based on state
+                if running_jump_state == 0:  # Normal state
+                    if blocks_above:
+                        if random.random() < 0.7:
+                            action = random.choice([2, 3, 4])  # Jump actions
+                        else:
+                            action = mario.act(state)
+                    else:
+                        action = mario.act(state)
+                        
+                        # Check if stuck
+                        x_pos_change = x_pos - prev_x_pos
+                        if abs(x_pos_change) < 1:
+                            stuck_counter += 1
+                            if stuck_counter > 20:
+                                running_jump_state = 1
+                                running_jump_start_pos = x_pos
+                                stuck_counter = 0
+                        else:
+                            stuck_counter = 0
+                
+                elif running_jump_state == 1:  # Backing up
+                    action = 6  # Move left
+                    if x_pos <= running_jump_start_pos - 48:
+                        running_jump_state = 2
+                
+                elif running_jump_state == 2:  # Running forward
+                    action = 1  # Move right
+                    if x_pos >= running_jump_start_pos - 32:
+                        running_jump_state = 3
+                
+                elif running_jump_state == 3:  # Jumping
+                    action = 4  # Right + A + B
+                    if y_pos_change > 0:
+                        running_jump_state = 0
+                
                 try:
                     next_state, reward, done, info = env.step(action)
                     next_state = np.array(next_state, dtype=np.float32) / 255.0
                     
-                    # Enhanced reward shaping
                     current_reward = 0
                     
-                    # Get current positions
+                    # Position tracking
                     x_pos = info.get('x_pos', 0)
                     y_pos = info.get('y_pos', 0)
                     x_pos_change = x_pos - prev_x_pos
                     y_pos_change = y_pos - prev_y_pos
+                    current_status = info.get('status', 'small')
                     
-                    # Stuck detection and handling
-                    if abs(x_pos_change) < 1 and abs(y_pos_change) < 1:
-                        stuck_counter += 1
+                    # Enemy kill detection and rewards
+                    current_kills = info.get('kills', 0)
+                    kills_this_step = current_kills - prev_kills
+                    
+                    if kills_this_step > 0:
+                        # Base kill reward
+                        current_reward += 30 * kills_this_step  # Big base reward for kills
                         
-                        # Initialize stuck position if newly stuck
-                        if stuck_counter == 1:
-                            stuck_x_position = x_pos
-                            running_jump_attempted = False
+                        # Kill streak bonus
+                        kill_streak += kills_this_step
+                        if kill_streak > 1:
+                            current_reward += 15 * kill_streak  # Bonus for kill streaks
                         
-                        # If stuck for a while, encourage backward movement for running jump
-                        if stuck_counter > 30 and not running_jump_attempted:
-                            # Position tuple to track attempted jump locations
-                            jump_pos = (int(x_pos), int(y_pos))
-                            
-                            if jump_pos not in attempted_jump_positions:
-                                # Encourage moving backward for a running start
-                                if backward_movement_start == 0:
-                                    backward_movement_start = steps
-                                    current_reward += 2  # Reward for initiating backward movement
-                                
-                                # If we've moved back enough, encourage running forward jump
-                                backward_distance = stuck_x_position - x_pos
-                                if backward_distance > 32:  # Moved back about 2 blocks
-                                    if action in [2, 3, 4]:  # Actions with jump + right movement
-                                        current_reward += 5  # Big reward for attempting running jump
-                                        running_jump_attempted = True
-                                        attempted_jump_positions.add(jump_pos)
-                                
-                                # Reward backward movement until we have enough distance
-                                elif x_pos_change < 0 and backward_distance <= 32:
-                                    current_reward += 0.5
+                        # Style points for jumping kills
+                        if y_pos > 50:  # If killing while in the air
+                            current_reward += 20  # Extra reward for aerial kills
+                        
+                        # Multi-kill bonus
+                        if kills_this_step > 1:
+                            current_reward += 25 * kills_this_step  # Bonus for multiple kills at once
+                        
+                        last_enemy_kill_pos = x_pos
                     else:
-                        # Reset stuck counter if moving
-                        stuck_counter = 0
-                        backward_movement_start = 0
-                        
-                        # Extra reward for successful running jump (clearing obstacles)
-                        if running_jump_attempted and y_pos_change > 0 and x_pos_change > 0:
-                            current_reward += y_pos_change * 2  # Bigger reward for higher jumps
-                            running_jump_attempted = False
+                        kill_streak = 0
                     
-                    # Regular movement and exploration rewards
-                    if y_pos > highest_y_pos:
-                        height_bonus = (y_pos - highest_y_pos) * 0.5
-                        current_reward += height_bonus
-                        highest_y_pos = y_pos
-                    
-                    if y_pos_change > 0:
-                        current_reward += y_pos_change * 0.3
-                        last_jump_height = y_pos
-                    
-                    # Block exploration
-                    if y_pos > 50:
-                        block_pos = (int(x_pos/16), int(y_pos/16))
-                        if block_pos not in blocks_explored:
-                            blocks_explored.add(block_pos)
-                            current_reward += 0.5
-                    
-                    # Coin and score rewards
-                    coins_collected = info.get('coins', 0) - prev_coins
-                    if coins_collected > 0:
-                        current_reward += coins_collected * 8
-                    
+                    # Block and coin rewards (maintained but reduced)
                     score_increase = info.get('score', 0) - prev_score
-                    if score_increase > 0:
-                        current_reward += score_increase * 0.2
+                    current_block_pos = (int(x_pos/16), int((y_pos+16)/16))
                     
-                    # Forward progress reward (reduced)
-                    if x_pos_change > 0 and not running_jump_attempted:
+                    if score_increase > 0 and current_block_pos not in blocks_hit:
+                        blocks_hit.add(current_block_pos)
+                        current_reward += 10  # Reduced from 20
+                        if prev_status == 'small' and current_status == 'tall':
+                            current_reward += 40  # Maintained high because it helps kill enemies
+                    
+                    # Running jump rewards
+                    if running_jump_state > 0:
+                        if running_jump_state == 3 and y_pos_change > 0:
+                            current_reward += y_pos_change * 2
+                        if x_pos > running_jump_start_pos:
+                            current_reward += 15
+                            running_jump_state = 0
+                    
+                    # Movement rewards
+                    if x_pos_change > 0 and running_jump_state == 0:
                         current_reward += x_pos_change * 0.1
                     
-                    # Special achievements
-                    if info.get('flag_get', False):
-                        current_reward += 100
+                    # Coin collection
+                    coins_collected = info.get('coins', 0) - prev_coins
+                    if coins_collected > 0:
+                        current_reward += coins_collected * 5  # Reduced from 8
                     
-                    if info.get('status', 'small') == 'tall':
-                        current_reward += 0.2
+                    # Jumping rewards
+                    if y_pos_change > 0:  # Moving upward
+                        current_reward += y_pos_change * 0.3  # Encourage jumping for attack
+                    
+                    # Status-based rewards
+                    if current_status == 'tall':
+                        current_reward += 0.1  # Small bonus for maintaining powered-up state
                     
                     # Death penalty
                     if info.get('life', 2) < 2:
                         current_reward -= 50
+                        running_jump_state = 0
+                        kill_streak = 0
                     
                     # Update previous state tracking
+                    prev_status = current_status
                     prev_coins = info.get('coins', 0)
                     prev_score = info.get('score', 0)
                     prev_x_pos = x_pos
                     prev_y_pos = y_pos
+                    prev_kills = current_kills
                     
                     # Store and learn
                     mario.cache(state, next_state, action, current_reward, done)
@@ -375,12 +403,13 @@ def train():
                             "Steps": steps,
                             "Total Reward": f"{total_reward:.2f}",
                             "Last Reward": f"{current_reward:.2f}",
-                            "Coins": info.get('coins', 0),
+                            "Kills": current_kills,
+                            "Kill Streak": kill_streak,
                             "Score": info.get('score', 0),
+                            "Status": current_status,
                             "Position": f"({x_pos:.0f}, {y_pos:.0f})",
-                            "Max Height": f"{highest_y_pos:.0f}",
-                            "Stuck Counter": stuck_counter,
-                            "Running Jump": "Attempted" if running_jump_attempted else "No",
+                            "Blocks Hit": len(blocks_hit),
+                            "Jump State": running_jump_state,
                             "Epsilon": f"{mario.epsilon:.3f}",
                             "Loss": f"{current_loss:.4f}" if current_loss else "N/A",
                             "Training Time": training_time,
@@ -389,7 +418,6 @@ def train():
                         }
                         display_status(status_info)
                     
-                    # Add a small delay to make the rendering visible
                     time.sleep(0.01)
                 
                 except Exception as e:
@@ -401,8 +429,8 @@ def train():
             print(f"\nEpisode {e+1} finished:")
             print(f"Total Steps: {steps}")
             print(f"Final Reward: {total_reward:.2f}")
-            print(f"Max Height: {highest_y_pos:.0f}")
-            print(f"Blocks Explored: {len(blocks_explored)}")
+            print(f"Total Kills: {current_kills}")
+            print(f"Blocks Hit: {len(blocks_hit)}")
             print(f"Final Score: {prev_score}")
             print(f"Coins Collected: {prev_coins}")
             
@@ -415,9 +443,8 @@ def train():
             # Log episode stats
             with open(os.path.join(LOG_DIR, 'training_log.txt'), 'a') as f:
                 f.write(f"Episode {e+1}: Steps={steps}, Reward={total_reward:.2f}, " 
-                        f"Coins={prev_coins}, Score={prev_score}, "
-                        f"MaxHeight={highest_y_pos:.0f}, BlocksExplored={len(blocks_explored)}, "
-                        f"Epsilon={mario.epsilon:.3f}\n")
+                        f"Kills={current_kills}, Score={prev_score}, "
+                        f"BlocksHit={len(blocks_hit)}, Epsilon={mario.epsilon:.3f}\n")
             
             # Cleanup between episodes
             gc.collect()
@@ -444,7 +471,7 @@ def train():
         print(f"Best Reward Achieved: {mario.best_reward:.2f}")
         print(f"Final Epsilon: {mario.epsilon:.3f}")
         print(f"Total Training Time: {total_time}")
-        
+                
 if __name__ == "__main__":
     try:
         train()
