@@ -1,2 +1,6 @@
 # MarioAI
 Ai plays super Mario bros NES
+
+# Mario AI Training System
+
+This project implements a Deep Q-Learning agent that learns to play Super Mario Bros. The system uses a convolutional neural network (CNN) to process game frames and make decisions about Mario's actions. The AI agent learns through experience by interacting with the game environment, receiving rewards for positive actions like collecting coins, defeating enemies, hitting blocks, and making forward progress. The system includes a custom reward mechanism that encourages Mario to explore blocks, collect power-ups, and perform skilled moves like precisely timed jumps on enemies. When Mario gets stuck, he learns to execute advanced strategies such as backing up to gain momentum for longer jumps. The training process is visualized in real-time using OpenCV, showing both the game screen and detailed performance metrics. The system continuously monitors and logs various performance indicators including rewards earned, enemies defeated, coins collected, and overall game progress. Training checkpoints are automatically saved, allowing the agent to resume training from its best performances. This implementation combines deep reinforcement learning techniques with game-specific knowledge to create an AI that progressively learns to navigate the classic Mario environments with increasing skill.
