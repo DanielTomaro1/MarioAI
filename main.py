@@ -1,7 +1,7 @@
 import gym
 import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 from nes_py.wrappers import JoypadSpace
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 import torch
 import torch.nn as nn
 import numpy as np
@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timedelta
 import traceback
 import gc
+from monitor import MarioMonitor
 
 # Configuration
 CHECKPOINT_DIR = "checkpoints"
@@ -195,7 +196,7 @@ def train():
     start_time = time.time()
     
     # Initialize environment and monitor
-    env = gym_super_mario_bros.make('SuperMarioBros-v0')
+    env = gym_super_mario_bros.make('SuperMarioBros-v3')
     env = JoypadSpace(env, SIMPLE_MOVEMENT)
     env = SkipFrame(env)
     env = GrayScaleObservation(env)
@@ -435,6 +436,8 @@ def train():
             print(f"Blocks Hit: {len(blocks_hit)}")
             print(f"Final Score: {prev_score}")
             print(f"Coins Collected: {prev_coins}")
+
+            monitor = MarioMonitor()  # Initialize the monitor
             
             # Update monitor with episode stats
             episode_stats = {
@@ -447,13 +450,12 @@ def train():
                 'steps': steps
             }
             monitor.update(episode_stats)
-            
+
             # Generate monitoring visualizations periodically
             if (e + 1) % 50 == 0:  # Every 50 episodes
                 monitor.plot_training_progress()
                 monitor.plot_performance_heatmap()
-                print("\n" + monitor.generate_stats_summary())
-            
+                print("\n" + monitor.generate_stats_summary())            
             # Save model periodically
             if (e + 1) % 50 == 0:
                 save_path = os.path.join(CHECKPOINT_DIR, f'mario_net_{e+1}.pth')
@@ -478,6 +480,12 @@ def train():
         monitor.plot_performance_heatmap()
         print("\nFinal Training Statistics:")
         print(monitor.generate_stats_summary())
+
+        # Generate final visualizations
+        monitor.plot_training_progress()
+        monitor.plot_performance_heatmap()
+        print("\nFinal Training Statistics:")
+        print(monitor.generate_stats_summary())
         
     except Exception as e:
         print(f"\nError during training: {str(e)}")
@@ -487,7 +495,7 @@ def train():
         # Save final model
         final_save_path = os.path.join(CHECKPOINT_DIR, 'mario_net_final.pth')
         mario.save_model(final_save_path, e, total_reward)
-        
+
         # Generate final monitoring visualizations
         monitor.plot_training_progress()
         monitor.plot_performance_heatmap()
