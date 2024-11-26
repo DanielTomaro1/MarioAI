@@ -1,9 +1,3 @@
 # MarioAI
 
-The system uses the following to play Super Mario Bros NES:
-
-Deep Q-Learning for decision making
-Convolutional Neural Networks for processing game screens
-Experience replay for stable learning
-Epsilon-greedy exploration strategy
-Target network for stable Q-learning
+This project implements a Deep Q-Learning AI that learns to play Super Mario Bros. The program uses PyTorch for the neural network implementation and OpenAI Gym with the gym-super-mario-bros environment. The AI agent processes visual input from the game, converting it to grayscale and resizing it to 84x84 pixels before feeding it through a convolutional neural network. The network learns through experience replay, storing past actions and their outcomes in a memory buffer. The agent is rewarded for various behaviors including forward progress, coin collection, block breaking, and successful navigation of obstacles. It features an innovative stuck-detection system that encourages Mario to attempt running jumps when faced with tall obstacles like pipes. The training process saves the best-performing models and maintains detailed logs of the agent's progress. The neural network architecture consists of three convolutional layers followed by two fully connected layers, allowing it to recognize patterns in the game environment and make intelligent decisions about movement and jumping strategies.
