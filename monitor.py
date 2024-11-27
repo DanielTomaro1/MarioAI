@@ -247,44 +247,25 @@ class MarioMonitor:
         plt.savefig(os.path.join(self.session_dir, 'learning_efficiency.png'))
         plt.close()
 
-    def save_checkpoint(self):
-        """Save monitor state to checkpoint."""
+    def save_checkpoint(self, episode, path):
         checkpoint = {
-            'episode_rewards': self.episode_rewards,
-            'episode_lengths': self.episode_lengths,
-            'episode_kills': self.episode_kills,
-            'episode_scores': self.episode_scores,
-            'episode_blocks': self.episode_blocks,
-            'epsilons': self.epsilons,
-            'best_reward': self.best_reward,
-            'best_score': self.best_score,
-            'total_kills': self.total_kills,
-            'total_blocks': self.total_blocks,
-            'session_id': self.session_id,
-            'start_time': self.start_time.strftime("%Y-%m-%d %H:%M:%S")
+            'episode': episode,
+            'model_state': self.mario.net.state_dict(),
+            'optimizer_state': self.mario.optimizer.state_dict(),
+            'exploration_rate': self.mario.epsilon,
+            'best_reward': self.mario.best_reward,
         }
-        
-        checkpoint_path = os.path.join(self.session_dir, 'monitor_checkpoint.json')
-        with open(checkpoint_path, 'w') as f:
-            json.dump(checkpoint, f, indent=4)
+        torch.save(checkpoint, path)
 
-    def load_checkpoint(self, checkpoint_path):
-        """Load monitor state from checkpoint."""
-        with open(checkpoint_path, 'r') as f:
-            checkpoint = json.load(f)
-        
-        self.episode_rewards = checkpoint['episode_rewards']
-        self.episode_lengths = checkpoint['episode_lengths']
-        self.episode_kills = checkpoint['episode_kills']
-        self.episode_scores = checkpoint['episode_scores']
-        self.episode_blocks = checkpoint['episode_blocks']
-        self.epsilons = checkpoint['epsilons']
-        self.best_reward = checkpoint['best_reward']
-        self.best_score = checkpoint['best_score']
-        self.total_kills = checkpoint['total_kills']
-        self.total_blocks = checkpoint['total_blocks']
-        self.session_id = checkpoint['session_id']
-        self.start_time = datetime.strptime(checkpoint['start_time'], "%Y-%m-%d %H:%M:%S")
+    def load_checkpoint(self, path):
+        if os.path.exists(path):
+            checkpoint = torch.load(path)
+            self.mario.net.load_state_dict(checkpoint['model_state'])
+            self.mario.optimizer.load_state_dict(checkpoint['optimizer_state'])
+            self.mario.epsilon = checkpoint['exploration_rate']
+            self.mario.best_reward = checkpoint['best_reward']
+            return checkpoint['episode']
+        return 0
 
     def get_current_performance_metrics(self):
         """Get current performance metrics as a dictionary."""

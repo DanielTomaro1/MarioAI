@@ -54,12 +54,39 @@ class ResizeObservation(gym.ObservationWrapper):
             observation = np.expand_dims(observation, axis=0)
         return observation
 
+class FrameStack(gym.Wrapper):
+    def __init__(self, env, n_frames=4):
+        super().__init__(env)
+        self.n_frames = n_frames
+        self.frames = deque([], maxlen=n_frames)
+        shape = (n_frames,) + env.observation_space.shape
+        self.observation_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=shape,
+            dtype=np.uint8
+        )
+
+    def observation(self):
+        return np.array(list(self.frames))
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.frames.append(obs)
+        return np.array(list(self.frames)), reward, done, info
+
+    def reset(self):
+        obs = self.env.reset()
+        for _ in range(self.n_frames):
+            self.frames.append(obs)
+        return np.array(list(self.frames))
+
 class CV2Renderer(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.window_name = "Mario AI Training"
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 800, 600)  # Larger window
+        cv2.resizeWindow(self.window_name, 800, 600)
         self.base_env = env
         
         # Try to get to the original env

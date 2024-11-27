@@ -1,4 +1,3 @@
-# main.py
 import os
 import gym
 import gym_super_mario_bros
@@ -9,8 +8,9 @@ from datetime import datetime, timedelta
 import traceback
 import gc
 import torch
+import random  # Add this line
 from config import CHECKPOINT_DIR, LOG_DIR, SIMPLE_MOVEMENT
-from wrappers import SkipFrame, GrayScaleObservation, ResizeObservation, CV2Renderer
+from wrappers import SkipFrame, GrayScaleObservation, ResizeObservation, CV2Renderer, FrameStack
 from agent import Mario
 from utils import display_status
 from reward_handler import RewardHandler
@@ -27,13 +27,27 @@ class MarioTrainer:
         self.mario = Mario(self.state_dim, self.action_dim)
         self.reward_handler = RewardHandler()
         self.monitor = MarioMonitor()
+        obs_shape = self.env.observation_space.shape
+        if len(obs_shape) == 3:
+            self.state_dim = obs_shape
+        else:
+            n_frames, c, h, w = obs_shape
+            self.state_dim = (n_frames, h, w)  # Frames become channels
+            
+        self.action_dim = self.env.action_space.n
+        self.mario = Mario(self.state_dim, self.action_dim)
         
         # Training parameters
         self.running_jump_state = 0
         self.running_jump_start_pos = 0
         self.stuck_counter = 0
         self.start_time = time.time()
-        self.total_episodes = 1000
+        self.total_episodes = 100
+        self.last_jump_pos = 0
+        self.stuck_counter = 0
+        self.enemy_detected = False
+        self.last_enemy_pos = 0
+        self.prev_x_pos = 0  # Add this line
         
         print(f"Using device: {self.mario.device}")
 
@@ -44,13 +58,14 @@ class MarioTrainer:
             env = SkipFrame(env)
             env = GrayScaleObservation(env)
             env = ResizeObservation(env)
-            env = CV2Renderer(env)  # Use CV2 rendering
+            env = FrameStack(env, 4)  # Stack 4 frames
+            env = CV2Renderer(env)
             return env
         except Exception as e:
             print(f"Error setting up environment: {str(e)}")
             raise
 
-    def train(self, episodes=1000, max_steps=1000):
+    def train(self, episodes=100, max_steps=1000):
         print("Starting Mario AI Training...")
         start_time = time.time()
         self.total_episodes = episodes
@@ -146,48 +161,74 @@ class MarioTrainer:
         }
     
     def _determine_action(self, state, x_pos, prev_x_pos, y_pos_change=0):
-        # Check if we should wait for a power-up
-        if self.reward_handler.should_wait_for_powerup():
-            return 0  # NOOP - wait for power-up
-            
-        # Check if we should return to a block
-        if self.reward_handler.should_return_to_block(x_pos):
-            block_x = self.reward_handler.last_block_hit_pos[0]
-            if x_pos < block_x - 5:
-                return 1  # Move right
-            elif x_pos > block_x + 5:
-                return 6  # Move left
-            return 5  # Jump to hit block again
+        # Getting unstuck behavior
+        x_pos_change = x_pos - prev_x_pos
+        if abs(x_pos_change) < 1:
+            self.stuck_counter += 1
+            if self.stuck_counter > 10:  # Reduced threshold
+                # If stuck, try jumping
+                if y_pos_change <= 0:
+                    return 2  # Jump
+                # If already jumping and still stuck, back up
+                else:
+                    self.running_jump_state = 1
+                    self.running_jump_start_pos = x_pos
+                    self.stuck_counter = 0
 
-        if self.running_jump_state == 0:  # Normal state
+        # Early game (first section)
+        if x_pos < 120:
+            # Reset running_jump_state if moving backwards too much
+            if x_pos < self.prev_x_pos - 32:
+                self.running_jump_state = 0
+                return 1  # Force move right
+
+            # If not jumping, mix between running right and jumping right
+            if y_pos_change <= 0:
+                if random.random() < 0.5:  # 50% chance to jump
+                    return 2  # Jump right
+                return 1  # Move right
+            return 1  # Keep moving right while in air
+
+        # Regular gameplay
+        if self.running_jump_state == 0:
             action = self.mario.act(state)
             
             # Check if stuck
-            x_pos_change = x_pos - prev_x_pos
             if abs(x_pos_change) < 1:
                 self.stuck_counter += 1
-                if self.stuck_counter > 20:
+                if self.stuck_counter > 15:
                     self.running_jump_state = 1
                     self.running_jump_start_pos = x_pos
                     self.stuck_counter = 0
             else:
                 self.stuck_counter = 0
-                
+
         elif self.running_jump_state == 1:  # Backing up
             action = 6  # Move left
-            if x_pos <= self.running_jump_start_pos - 64:  # Increased backup distance
+            if x_pos <= self.running_jump_start_pos - 32:
                 self.running_jump_state = 2
+            # Timeout for backing up
+            self.stuck_counter += 1
+            if self.stuck_counter > 20:
+                self.running_jump_state = 2
+                self.stuck_counter = 0
                 
         elif self.running_jump_state == 2:  # Running forward
-            action = 2  # Move right with A pressed
-            if x_pos >= self.running_jump_start_pos - 32:
+            action = 2  # Move right + jump
+            if x_pos >= self.running_jump_start_pos - 16:
                 self.running_jump_state = 3
                 
-        elif self.running_jump_state == 3:  # Long jumping
+        elif self.running_jump_state == 3:  # Jumping
             action = 4  # Right + A + B
             if y_pos_change > 0:
                 self.running_jump_state = 0
-                
+
+        # Safety check - if moving backwards too much, force right movement
+        if x_pos < self.prev_x_pos - 48:
+            action = 1  # Force move right
+            self.running_jump_state = 0
+
+        self.prev_x_pos = x_pos
         return action
 
     def _process_episode_results(self, stats, episode, start_time):
@@ -202,15 +243,13 @@ class MarioTrainer:
             self.monitor.plot_learning_efficiency()
             print("\n" + self.monitor.generate_stats_summary())
             
-        # Save model checkpoint
-        if (episode + 1) % 50 == 0:
+            # Save model checkpoint
             save_path = os.path.join(CHECKPOINT_DIR, f'mario_net_{episode+1}.pth')
-            if self.mario.save_model(save_path, episode, stats['reward']):
-                print(f"\nNew best model saved! Reward: {stats['reward']:.2f}")
-                
-        # Save monitor checkpoint
-        self.monitor.save_checkpoint()
-
+            self.save_checkpoint(episode, save_path)
+                    
+        # Update exploration rate
+        self.mario.update_exploration_rate(episode)
+        
     def _display_training_status(self, episode, steps, total_reward, current_reward, 
                                current_loss, info, start_time):
         training_time = str(timedelta(seconds=int(time.time() - start_time)))
